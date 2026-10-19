@@ -2,6 +2,14 @@
 
 Assumption: full-sphere far-field data on a regular θ,φ grid.
 
+Numerical checks (NumPy only): [`swe-scripts/`](swe-scripts/)
+- `check_orthogonality.py` — Gram matrices for `sinθ·Δθ` vs
+  Clenshaw–Curtis weights, nested truncation (steps 4, 4a)
+- `check_recentring.py` — closed-form vs brute-force re-centring on a
+  synthetic shifted 8×8 array (step 0a)
+- `swe_lib.py` — shared helpers (tables, design matrices, fit,
+  synthesis, closed-form r₀)
+
 ## 0. Conventions
 
 - Far field: `E(r,θ,φ) = K(θ,φ)·e^{-jkr}/r`,  `K = (Kθ, Kφ)`, complex.
