@@ -14,6 +14,144 @@ Assumption: full-sphere far-field data on a regular θ,φ grid.
   normalisation works; the orthonormal choice below gives Parseval
   (needed for the power matrix).
 
+## 0a. Re-centring: data-driven global origin r₀
+
+Far fields referenced to a simulation origin O, array centre at r₀
+(convention `e^{−jkr}/r`):
+```
+K_O(θ,φ) = K_c(θ,φ) · e^{+jk r₀·r̂},    r̂ = (sinθcosφ, sinθsinφ, cosθ)
+```
+- Exact pointwise phase factor in the far field. The SWE about O can
+  represent it, but needs `L ≈ ⌈k(|r₀| + a)⌉ + 10` → Ncoef grows like
+  `(k(|r₀|+a))²` (a = 2.8λ: shift 1λ → 1.5×, 5λ → 4.3×, 10λ → L > 90,
+  exceeds the 1° grid). It also adds a direction-dependent delay
+  `±|r₀|/c` to the frequency axis (step 9).
+- A global shift is common to all elements and factors out of the
+  superposition (`K_array = e^{jk r₀·r̂} Σ w_e K_c,e`) → remove it.
+  Per-element offsets `d_e` do not factor out and stay in the
+  coefficients (common origin).
+
+### Objective: most compact mode spectrum
+
+For a trial r₀, rephase `K' = K·e^{−jk r₀·r̂}`, fit, and minimise
+```
+J(r₀) = Σ_e ⟨ν⟩_e,   ⟨ν⟩_e = Σ_n n(n+1) S_e(n) / Σ_n S_e(n)
+```
+(mean-square angular frequency; `√⟨ν⟩/k` ≈ RMS radiating radius seen
+from r₀). J is exactly quadratic in r₀ → closed-form minimiser.
+
+### Mode energy as a field integral
+
+- `Z_nm = ∇_s Y_nm/√ν` (TM, gradient type),
+  `X_nm = −r̂ × ∇_s Y_nm/√ν` (TE, rotated gradient); with
+  `Δ_s Y = −νY` and `curl_s F := r̂·∇×F`:
+  ```
+  div_s Z = −√ν Y,   div_s X = 0
+  curl_s X = +√ν Y,  curl_s Z = 0
+  ```
+- Hence
+  ```
+  D := div_s K  = −Σ √ν · b_nm · Y_nm
+  C := curl_s K = +Σ √ν · a_nm · Y_nm
+  Σ ν(|a|² + |b|²) = ∫ ( |D|² + |C|² ) dΩ
+  ```
+
+### Re-centring is affine in r₀ → J quadratic
+
+- `g = e^{−jk r₀·r̂}`, `∇_s g = −jk g P_t r₀`, `P_t = I − r̂r̂ᵀ`:
+  ```
+  div_s (gK) = g · ( D − jk r₀·K )
+  curl_s(gK) = g · ( C + jk r₀·(r̂×K) )
+  J(r₀) = ∫ |D − jk r₀·K|² + |C + jk r₀·(r̂×K)|² dΩ
+  ```
+- For real r₀ the quadratic terms add up to `|K|² P_t` (K and r̂×K
+  span the tangent plane, any polarisation):
+  ```
+  J(r₀) = J(0) + gᵀ r₀ + ½ r₀ᵀ H r₀
+  H = 2k² M,   M = ∫ |K|² P_t dΩ                     (3×3, real, sym.)
+  g = −2k n,   n = ∫ Im( C̄ (r̂×K) − D̄ K ) dΩ         (3-vector)
+  ```
+
+### Closed-form solution
+
+```
+r₀ = M⁻¹ n / k
+```
+Summed over elements and frequencies with per-element normalisation
+`w_ef = 1/∫|K_ef|² dΩ`:
+```
+r₀ = [ Σ_ef w_ef k_f² M_ef ]⁻¹ · [ Σ_ef w_ef k_f n_ef ]
+```
+
+### Physical meaning
+
+- Locally single-polarised field `K = A e^{jψ}` (A real, tangential):
+  `Im(C̄(r̂×K) − D̄K) = |K|² ∇_s ψ` →
+  ```
+  r₀ = (1/k) · M⁻¹ ∫ |K|² ∇_s ψ dΩ
+  ```
+  = power-weighted LS fit of the phase gradient to a pure translation,
+  `∇_s ψ ≈ k P_t r₀` (point source at p → r₀ = p exactly).
+- The D/C form gives the same without phase unwrapping and stays valid
+  in nulls and for mixed / elliptical polarisation.
+- For `K = K_c e^{jk p·r̂}`: `r₀ = p − M⁻¹ n_c / k` = true shift + the
+  intrinsic centre of the centred pattern — the right answer for
+  compression.
+
+### Implementation
+
+1. Fit once with `L_big` (large enough for the un-centred data) →
+   `a_nm, b_nm`.
+2. Scalar spectra `D_m = −Θ_n^{|m|}·(√ν b)`, `C_m = +Θ_n^{|m|}·(√ν a)`,
+   inverse FFT in φ (reuses the Θ tables, no derivatives needed).
+3. Cartesian vectors: `K = Kθ θ̂ + Kφ φ̂`, `r̂×K = Kθ φ̂ − Kφ θ̂`,
+   `θ̂ = (cosθcosφ, cosθsinφ, −sinθ)`, `φ̂ = (−sinφ, cosφ, 0)`.
+4. M and n by quadrature, `dΩ = w_i^{CC} · 2π/Nφ` (exact: integrands
+   band-limited to ~2·L_big < 180).
+5. Solve 3×3 → rephase with `e^{−jk r₀·r̂}` → fit with the final L →
+   store r₀ in the metadata (the "origin" field of step 4).
+- Cost: one fit + two scalar syntheses + grid sums (vs ~10 fits for a
+  search over J).
+
+### Practical
+
+- Large shifts (`L_big > 90` needed): estimate at the lowest frequency
+  first (r₀ is frequency-independent, mode count scales with k), then
+  refine with a second pass on the re-centred data at the highest
+  frequency.
+- One r₀ for all frequencies (sum over f) → coefficients stay smooth
+  in f.
+- Per-element centres: the same formula per element (no Σ_e) gives
+  `r₀,e ≈ d_e + r₀` → check layout / port mapping.
+- Asymmetric layouts / platforms: Σ_e gives the centroid; if the
+  worst element should set L, refine with a minimax criterion (max
+  tail energy above L), starting from the centroid.
+- Conditioning: M is ill-conditioned only if nearly all power is in
+  one direction; summing over elements and frequencies fixes this in
+  practice.
+- Downstream: `|e^{jk r₀·r̂}| = 1` → magnitudes, nulls, P_rad, R
+  unchanged. For absolute phase in the original frame re-apply the
+  factor pointwise after synthesis (step 7) or on the steering rows
+  (step 8) — not in the coefficient domain (full translation matrix
+  there).
+
+### Check (synthetic)
+
+- 8×8 at λ/2, random element patterns up to n = 3, shift
+  r₀ = (0.7, −1.3, 0.4)λ, L_big = 60, 1° grid:
+  - closed form (1 fit): (0.704252, −1.296070, 0.402876)λ;
+  - brute-force quadratic search over J (19 fits): identical to
+    9e-14; the 0.005λ offset from the true shift is the intrinsic
+    centre of the random element patterns.
+- Worst-element tail energy above L:
+
+  | L | 20 | 25 | 30 | 35 |
+  |---|---|---|---|---|
+  | no shift removed | −2 dB | −13 dB | −37 dB | −70 dB |
+  | re-centred | −33 dB | −71 dB | −120 dB | −178 dB |
+
+  → −60 dB needs L ≈ 34 without, ≈ 24 with re-centring.
+
 ## 1. Basis (tangential vector spherical harmonics)
 
 - Scalar: `Y_nm = Θ_n^m(θ)·e^{jmφ}/√(2π)`
@@ -203,7 +341,10 @@ Use one common `L_fit` for all f (nested, step 4a).
   - element ringing: amplitude time constant `τ_r = Q/(π f_c)`,
     decays to ε after `τ_r·ln(1/ε)`;
   - mutual coupling: multiple passes across the aperture
-    (≈ aperture/c per pass).
+    (≈ aperture/c per pass);
+  - global shift r₀ of the array from the origin: `±|r₀|/c`,
+    direction-dependent (not removable by τ_e) → remove by
+    re-centring (step 0a).
 - Sampling every Δf makes the time response periodic with `1/Δf`:
   ```
   Δf < 1/T            hard limit (otherwise time-domain aliasing)
