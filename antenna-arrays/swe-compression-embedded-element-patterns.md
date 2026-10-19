@@ -51,6 +51,9 @@ Assumption: full-sphere far-field data on a regular θ,φ grid.
   and raise L until tail and residual < target (e.g. −60 dB if
   deep nulls matter). Requires `Nφ ≥ 2L+1` and `Nθ ≫ L`.
 - Simplest: one L (highest frequency) for all frequencies.
+- With exact θ quadrature (step 4) the coefficients are nested: fit
+  once with a generous `L_fit` (≤ 90 on the 1° grid) and truncate
+  later per frequency/application, see step 4a.
 
 ## 3. φ-direction: FFT (exact separation by m)
 
@@ -66,12 +69,34 @@ Assumption: full-sphere far-field data on a regular θ,φ grid.
     θ-rows: [  j·A_nm(θ_i) ,   B_nm(θ_i) ]
     φ-rows: [   −B_nm(θ_i) , j·A_nm(θ_i) ]
     ```
-- Quadrature weights `w_i = sinθ_i·Δθ` (pole rows get 0: fine);
-  `W = diag(w, w)` for θ- and φ-rows.
-- Precompute ONCE per (grid, L, m):
+- Quadrature weights: Clenshaw–Curtis in `x = cosθ`.
+  The grid `θ_j = jπ/N`, `j = 0..N` (N = 180) is exactly the
+  Chebyshev–Lobatto grid in cosθ, so these weights integrate
+  `∫ f sinθ dθ` exactly for f polynomial in cosθ of degree ≤ N:
   ```
-  P_m = pinv(W^½ G_m) · W^½                   (2N_m × 2Nθ)
+  w_j = c_j/N · ( 1 − Σ_{k=1..N/2} b_k·cos(2kθ_j)/(4k²−1) )
+  c_j = 1 for j ∈ {0, N}, else 2
+  b_k = 1 for 2k = N,     else 2
   ```
+  Pole weights are small but non-zero (pole rows need the analytic
+  limits of A, B). `W = diag(w, w)` for θ- and φ-rows.
+- Why not `w_i = sinθ_i·Δθ`: that is a trapezoid rule with O(Δθ²)
+  endpoint error at the poles → Gram matrix only ≈ I (max deviation
+  ~7e-4 at |m| = 1, ~1e-5 at m = 0, 2, ≤ 1e-12 for |m| ≥ 5;
+  L = 28, 1° grid). Usable, but not exactly nested.
+- Exact discrete orthogonality: at fixed m every vector-harmonic
+  inner-product integrand (TE·TE, TM·TM, TE·TM) is a polynomial in
+  cosθ of degree n + n′, so with Clenshaw–Curtis weights
+  ```
+  2π · G_m^H W G_m = I     exactly, for 2L ≤ N  (L ≤ 90 here)
+  ```
+- Hence the least-squares fit is a plain quadrature projection —
+  no pinv needed. Precompute ONCE per (grid, L, m):
+  ```
+  P_m = 2π · G_m^H W                          (2N_m × 2Nθ)
+  ```
+  (equivalent to `pinv(W^½ G_m) · W^½`, which remains the fallback
+  for non-exact weights.)
 - Fit all elements × frequencies with one matmul per m:
   ```
   X_m = P_m @ C_m,   C_m shape (2Nθ, 64·Nf)
@@ -80,6 +105,40 @@ Assumption: full-sphere far-field data on a regular θ,φ grid.
   - plus metadata: L, origin, grids, freq list, normalisation,
     coefficient index map (n, m, TE/TM).
 
+## 4a. Nested truncation (fit high, discard later)
+
+- Question: fit with many modes, drop the high orders later — do the
+  remaining coefficients shift?
+- Answer: no, as long as the modes are orthogonal over the fitting
+  region on the discrete grid:
+  - different m: separated exactly by the φ-FFT (aliasing only for
+    |m| > Nφ/2);
+  - same m, different n / TE vs TM: orthogonal over the full sphere;
+    exact on the grid with Clenshaw–Curtis weights (step 4).
+- Then the coefficients do not depend on the L used in the fit:
+  truncating `L_fit → L` gives the same coefficients as fitting with L
+  directly, and the extra error is exactly the energy of the dropped
+  modes:
+  ```
+  ||K − K̂_L||²_W = residual(L_fit) + Σ_{n=L+1..L_fit} S(n)
+  ```
+  → `S(n)` directly gives the truncation error for any choice of L.
+- Numerical check (synthetic pattern with modes to n = 50, fit with
+  L_fit = 40 then truncate to 28, vs. fit with 28 directly):
+  - Clenshaw–Curtis: relative coefficient difference ~2e-15;
+  - `sinθ·Δθ`: up to ~8e-7 (|m| = 1), i.e. coupling (≤ 1e-3) × size
+    of the dropped tail — still far below a −60 dB target;
+  - residual identical in both cases.
+- Practical: fit once with a generous L_fit, choose L per frequency
+  from S(n) afterwards.
+- Caveats:
+  - requires full-sphere data; a partial sphere or masked regions
+    break orthogonality → coefficients couple and shift on truncation;
+  - unweighted LS (`W = I`) also breaks it — the weights are what make
+    the fit a projection;
+  - content above n ≈ N/2 = 90 or |m| > Nφ/2 = 180 aliases into the
+    kept modes (not a concern for a ≈ 2.8λ).
+
 ## 5. Validation
 
 - Resynthesize every element (step 7):
@@ -87,7 +146,9 @@ Assumption: full-sphere far-field data on a regular θ,φ grid.
   rel. RMS error             = ||K − K̂||_W / ||K||_W
   max error re. peak [dB]    = 20·log10( max|K − K̂| / max|K| )
   ```
-- Parseval: `∫|K|² dΩ ≈ ||q||²`
+- Parseval: `∫|K|² dΩ ≈ ||q||²` (exact on the grid for a
+  band-limited pattern with Clenshaw–Curtis weights; the gap is the
+  out-of-band residual)
 - Optional: null depth of steered patterns vs. raw grid data.
 
 ## 6. Superposition (each weight change)
