@@ -155,8 +155,8 @@ Assumption: full-sphere far-field data on a regular θ,φ grid.
 
 - `q = Q_f @ w`  (w: 64 complex weights)
 - Many weight sets at once: `Q_f @ W`
-- Between frequency samples: interpolate Q entrywise in f
-  (linear or cubic; smooth because the origin is fixed).
+- Between frequency samples: see step 9 (remove feed delays first;
+  plain linear interpolation is not good enough for coarse sampling).
 - Radiated power: `P_rad = ||q||²/(2η) = w^H R w/(2η)`,
   `R = Q_f^H Q_f` (64×64, precompute).
 
@@ -183,6 +183,110 @@ Assumption: full-sphere far-field data on a regular θ,φ grid.
   w = ( I − A^H (A A^H)^{-1} A ) w0
   ```
 - Real achievable null depth ≈ model error from step 5.
+
+## 9. Frequency axis: sampling and interpolation
+
+The fit is linear and identical at every frequency, and the basis is
+orthonormal (Parseval), so all frequency modelling can be done on the
+coefficients `Q[c, e, f]` instead of on the patterns — same L2 error.
+Use one common `L_fit` for all f (nested, step 4a).
+
+### 9.1 Delay spread → sampling requirement
+
+- Impulse response of a coefficient: `h_{c,e}(t) = IFT_f{ q_{c,e}(f) }`.
+  Delay spread T = time span holding all energy above the error target.
+- Contributions (supports add, effects convolve):
+  - feed delay `τ_e`: pure delay `e^{−j2πfτ_e}` (port reference plane
+    behind feed line / cable) — removable, see 9.2;
+  - geometry: element offset `d_e` from the common origin → arrivals
+    within `±|d_e|/c`; bound for any element `2a/c`;
+  - element ringing: amplitude time constant `τ_r = Q/(π f_c)`,
+    decays to ε after `τ_r·ln(1/ε)`;
+  - mutual coupling: multiple passes across the aperture
+    (≈ aperture/c per pass).
+- Sampling every Δf makes the time response periodic with `1/Δf`:
+  ```
+  Δf < 1/T            hard limit (otherwise time-domain aliasing)
+  Δf ≈ 1/(2…3·T)      practical (exponential tails)
+  ```
+  For a resonance: `Δf < π·Δf_3dB / ln(1/ε)` → at −60 dB ≥ 2.2
+  samples per 3 dB bandwidth, 4–6 in practice.
+- Example (rough assumptions): 14–16 GHz, 8×8 at λ/2 @ 16 GHz,
+  a ≈ 52 mm.
+  - 2a/c ≈ 0.35 ns; ringing Q ≈ 8 → 1.2 ns to −60 dB;
+    coupling ≈ 0.75 ns → T ≈ 2.3 ns → Δf < 430 MHz.
+  - 250 MHz sampling (9 points) is fine for a low-Q element covering
+    the band; a high-Q feature (Q ≈ 50, 300 MHz wide) would need
+    Δf ≲ 140 MHz → under-resolved.
+
+### 9.2 Remove feed delays first
+
+- Estimate per element from adjacent samples:
+  ```
+  arg( q_e(f)^H q_e(f+Δf) ) ≈ −2πΔf·τ_e      (average over f)
+  ```
+  multiply out `e^{+j2πfτ_e}`, store `τ_e`, re-apply after
+  interpolation.
+- Why it matters: interpolators assume content near t = 0. Linear
+  interpolation of `e^{−j2πfτ}`, phase step `δ = 2πΔfτ`, midpoint
+  error `1 − cos(δ/2)`:
+  - τ = 0.5 ns, Δf = 250 MHz: δ = 45° → ≈ −22 dB;
+  - geometric part, corner element (±0.15 ns): δ ≈ 14° → ≈ −43 dB
+    — not removable by τ_e, already ruins −60 dB nulls with linear
+    interpolation.
+
+### 9.3 Interpolator
+
+- After τ_e removal, choose by what remains:
+  - cubic spline or global low-order polynomial (Chebyshev /
+    barycentric): covers the geometric part easily (for 0.15 ns over
+    2 GHz a degree-8 polynomial is accurate to ~1e-7);
+  - rational fit with common poles for resonant behaviour (9.5).
+- Interpolate `Q`, then compute `R(f) = Q(f)^H Q(f)` — do not
+  interpolate R (quadratic in Q).
+
+### 9.4 Validation without new simulations: leave-one-out
+
+- Drop each interior sample, predict it from the remaining ones,
+  compare (pattern-domain error = coefficient error by Parseval).
+- Directly answers whether sampling + interpolator suffice; does not
+  test extrapolation at the band edges.
+- Optional diagnostic: power delay profile
+  `PDP(t) = Σ_{c,e} |h_{c,e}(t)|²` (Kaiser window β ≈ 8–10, not
+  Hann); a wrapped-around tail at the window end means Δf too coarse.
+
+### 9.5 High-Q resonances: rational fit + adaptive points
+
+- Nyquist reasoning assumes a generic band-limited model. A resonance
+  is one pole pair: long delay spread, but few degrees of freedom.
+- Vector fitting with poles shared by all ~110k responses:
+  ```
+  Q(f) ≈ Σ_p R_p / (j2πf − p_p) + D + E·f
+  ```
+  Shared poles are pinned down robustly; geometric phase goes into
+  `D + E·f` / low-order terms (small here, B·2a/c ≈ 0.7).
+- Needs a few samples within the resonance's 3 dB width, not dense
+  sampling over the whole band.
+- Adaptive sampling: coarse grid → fit → add a simulation point where
+  models of different order / leave-one-out predictions disagree →
+  repeat. New points land only near the resonance.
+- Solver side: fast / adaptive frequency sweeps (check that far
+  fields, not only S-parameters, are available), or a time-domain
+  solver (one run per port gives all frequencies; cost scales with T,
+  i.e. high Q → longer run, not more frequency points).
+
+### 9.6 Frequency compression (only with dense sampling)
+
+- With few samples (e.g. 9) there is nothing to gain in storage or
+  speed. With dense samples (e.g. 201 from a sweep):
+  - remove τ_e, optionally normalise per frequency (`1/||Q_f||_F`);
+  - joint SVD of `M` ((Ncoef·64) × Nf) ≈ `U_r S_r V_r^H`; discarded
+    `Σ σ_ρ²` = discarded pattern energy (Parseval, Eckart–Young);
+  - fit the r curves `v_ρ(f)` with Chebyshev / splines;
+  - `Q(f) = e^{−j2πfτ} · Σ_ρ v_ρ(f) U_ρ`; for fixed weights
+    precompute `U_ρ @ w` → r-term sum per frequency.
+- Expected size: `r ≈ B·T + few`, Chebyshev terms
+  `≈ (π/2)·B·T + margin`.
 
 ## Typical sizes (8×8, λ/2 spacing, a ≈ 2.8λ)
 
