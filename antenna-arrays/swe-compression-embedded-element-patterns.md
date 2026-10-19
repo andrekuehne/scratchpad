@@ -7,6 +7,8 @@ Numerical checks (NumPy only): [`swe-scripts/`](swe-scripts/)
   Clenshaw–Curtis weights, nested truncation (steps 4, 4a)
 - `check_recentring.py` — closed-form vs brute-force re-centring on a
   synthetic shifted 8×8 array (step 0a)
+- `check_sampling.py` — minimum measurement grids (Gauss–Legendre vs
+  equiangular rings) and reconstruction on the 1° grid (step 10)
 - `swe_lib.py` — shared helpers (tables, design matrices, fit,
   synthesis, closed-form r₀)
 
@@ -436,6 +438,66 @@ Use one common `L_fit` for all f (nested, step 4a).
     precompute `U_ρ @ w` → r-term sum per frequency.
 - Expected size: `r ≈ B·T + few`, Chebyshev terms
   `≈ (π/2)·B·T + margin`.
+
+## 10. Measurement sampling: minimum grid for a band limit L
+
+A pattern band-limited to L is fully determined by a small grid;
+step 7 then reconstructs it exactly on any finer grid.
+
+### 10.1 Sample counts
+
+- Unknowns: `2L(L+2)` complex coefficients; each direction gives two
+  complex values (Kθ, Kφ) → absolute minimum `L(L+2)` directions.
+- φ: `Nφ ≥ 2L+1` equispaced points per ring → FFT recovers all
+  |m| ≤ L exactly.
+- θ: the fit stays an exact projection if the θ quadrature integrates
+  polynomials in cosθ up to degree 2L exactly:
+
+  | θ rings | rings (L = 28) | directions (× 57 φ) | vs minimum |
+  |---|---|---|---|
+  | equiangular + Clenshaw–Curtis, N = 2L | 57 (3.2° steps) | 3249 | ~4× |
+  | Gauss–Legendre nodes in cosθ | **29** | **1653** | ~2× |
+  | near-minimal designs | — | ~840–1000 | ~1–1.2× |
+
+- Check (`swe-scripts/check_sampling.py`): Gram matrix exact (2e-14)
+  with 29 Gauss–Legendre rings, broken (≈ 1) with 28; random pattern
+  with modes up to L = 28 sampled on 29 × 57 and rebuilt on the 1° grid:
+  relative error 2.5e-14.
+- Below Gauss–Legendre:
+  - high-m modes die off like `sin^|m|θ` near the poles → rings there
+    need only ≈ `2L·sinθ` + margin φ points (≈ ⅓ fewer samples), but the
+    fit becomes least squares instead of FFT + projection;
+  - optimal-dimensionality sampling schemes (e.g. Khalid, Kennedy &
+    McEwen) approach `L(L+2)`, but are poorly conditioned → not
+    attractive for measured data.
+
+### 10.2 Practical points
+
+1. L is set by the minimum sphere, cost grows like L²:
+   `L ≈ ⌈ka⌉ + n₁`, n₁ ≈ 10 for a ~−60 dB tail. The field is not
+   strictly band-limited (modes above ka decay fast but not to zero);
+   everything above the sampled L aliases into the kept modes → n₁ is
+   the aliasing margin.
+2. Centre the antenna: an offset |r₀| raises L to `k(|r₀|+a)`. With a
+   known offset (mount geometry or a coarse pre-scan, step 0a), fit
+   far-field data with basis functions × `e^{jk r₀·r̂}` → unknowns set
+   by the small centred L (general least squares instead of FFT +
+   projection).
+3. Keep redundancy (~1.2–2× the minimum): a grid without spare samples
+   passes noise and positioning errors straight into the coefficients
+   and leaves no residual to check. With modest oversampling the fit
+   residual estimates noise + aliasing. Gauss–Legendre rings are ~2× and
+   perfectly conditioned → the safe choice.
+4. Measure the full sphere: gaps (mount blockage, missing back
+   hemisphere) break the orthogonality from 4a → ill-conditioned least
+   squares, coefficients mix.
+5. Count the slow axis: with φ rings swept continuously and sampled on
+   the fly, time scales with the number of stepped θ rings →
+   2L+1 equiangular → L+1 Gauss–Legendre rings roughly halves it; the
+   frequency sweep comes for free on every ring.
+6. Spherical near-field scanning: same angular rule (Hansen:
+   `Δθ, Δφ ≤ 360°/(2N+1)`, `N = ka + n₁`), plus probe correction and
+   radial functions (standard spherical near-field transformation).
 
 ## Typical sizes (8×8, λ/2 spacing, a ≈ 2.8λ)
 
